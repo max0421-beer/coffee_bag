@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Coffee Brew Journal</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f7f3e9;
+            color: #4a2c2a;
+        }
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 1rem;
+        }
+        .scroll-container {
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        .input-file-label {
+            cursor: pointer;
+            background-color: #5C5470;
+            color: white;
+            padding: 1rem 1.5rem;
+            border-radius: 9999px;
+            text-align: center;
+            font-weight: 600;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+            transition: background-color 0.3s;
+        }
+        .input-file-label:hover {
+            background-color: #4A4259;
+        }
+        .input-file-label:focus {
+            outline: none;
+            box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.5);
+        }
+    </style>
+</head>
+<body class="p-4">
+    <div class="container bg-white shadow-xl rounded-2xl p-6 md:p-8">
+        <h1 class="text-3xl font-bold text-center text-brown-900 mb-6">Coffee Brew Journal</h1>
+        
+        <!-- Camera and Capture Section -->
+        <div id="camera-section" class="flex flex-col items-center">
+            <div class="relative w-full aspect-video bg-gray-200 rounded-lg overflow-hidden shadow-inner mb-4">
+                <video id="video-feed" class="w-full h-full object-cover"></video>
+                <canvas id="photo-canvas" class="hidden w-full h-full object-cover"></canvas>
+            </div>
+            <div class="flex space-x-4 w-full">
+                <button id="capture-button" class="flex-1 bg-brown-600 text-white font-semibold py-3 px-6 rounded-full shadow-lg hover:bg-brown-700 transition-colors">Take Photo</button>
+                <label for="file-input" class="flex-1 input-file-label">Choose Photo</label>
+                <input type="file" id="file-input" accept="image/*" class="hidden">
+            </div>
+            <p id="status-message" class="mt-4 text-center text-sm text-gray-500"></p>
+        </div>
+
+        <!-- Detected Info Section -->
+        <div id="detected-info-section" class="hidden mt-8">
+            <h2 class="text-2xl font-semibold mb-4 text-brown-800">Detected Details</h2>
+            <div id="detected-details" class="bg-gray-50 p-4 rounded-xl space-y-2">
+                <!-- Details will be dynamically inserted here -->
+            </div>
+            <button id="save-record-button" class="mt-6 w-full bg-green-600 text-white font-semibold py-3 px-6 rounded-full shadow-lg hover:bg-green-700 transition-colors">Save Record</button>
+        </div>
+
+        <!-- Record History Section -->
+        <div class="mt-10">
+            <h2 class="text-2xl font-semibold mb-4 text-brown-800">My Records</h2>
+            <div id="records-list" class="scroll-container bg-gray-50 p-4 rounded-xl space-y-4">
+                <!-- Records will be dynamically inserted here -->
+                <p id="no-records-message" class="text-center text-gray-500">No records saved yet.</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const STORAGE_KEY = 'coffeeBrewRecords';
+        const API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=";
+        const apiKey = ""; // Leave as-is, the environment provides this
+
+        const video = document.getElementById('video-feed');
+        const canvas = document.getElementById('photo-canvas');
+        const captureButton = document.getElementById('capture-button');
+        const fileInput = document.getElementById('file-input');
+        const saveRecordButton = document.getElementById('save-record-button');
+        const detectedInfoSection = document.getElementById('detected-info-section');
+        const recordsList = document.getElementById('records-list');
+        const statusMessage = document.getElementById('status-message');
+
+        let stream;
+        let photoDataURL;
+        let isCameraActive = true;
+        let extractedData = {}; // Store the extracted data for saving
+
+        // Function to start the camera feed
+        async function startCamera() {
+            try {
+                if (stream) {
+                    stream.getTracks().forEach(track => track.stop());
+                }
+                stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+                video.srcObject = stream;
+                video.style.display = 'block';
+                canvas.style.display = 'none';
+                captureButton.textContent = 'Take Photo';
+                isCameraActive = true;
+                statusMessage.textContent = 'Camera is ready. Point it at your coffee bag.';
+            } catch (err) {
+                statusMessage.textContent = 'Error: Could not access the camera. Please check your browser permissions.';
+                console.error('Error accessing camera:', err);
+                captureButton.disabled = true;
+            }
+        }
+
+        // Function to handle image processing and API call
+        async function processImage(imageElement) {
+            canvas.width = imageElement.naturalWidth || imageElement.videoWidth;
+            canvas.height = imageElement.naturalHeight || imageElement.videoHeight;
+            const context = canvas.getContext('2d');
+            context.drawImage(imageElement, 0, 0, canvas.width, canvas.height);
+            photoDataURL = canvas.toDataURL('image/jpeg');
+            
+            // Hide the image source (video or image element) and show the canvas
+            if (isCameraActive) {
+                video.srcObject.getTracks().forEach(track => track.stop());
+                video.style.display = 'none';
+            }
+            canvas.style.display = 'block';
+            
+            captureButton.textContent = 'Retake Photo';
+            statusMessage.textContent = 'Photo captured. Analyzing...';
+
+            try {
+                const base64ImageData = photoDataURL.split(',')[1];
+                const prompt = "Act as a coffee expert. Analyze this image of a coffee bag label and extract the following information: Coffee Farm, Coffee Variety, Roaster, Process, and Tasting Notes. Respond only in the specified JSON format. If a piece of information is not present, use 'N/A'.";
+                
+                const payload = {
+                    contents: [{
+                        parts: [
+                            { text: prompt },
+                            {
+                                inlineData: {
+                                    mimeType: "image/jpeg",
+                                    data: base64ImageData
+                                }
+                            }
+                        ]
+                    }],
+                    generationConfig: {
+                        responseMimeType: "application/json",
+                        responseSchema: {
+                            type: "OBJECT",
+                            properties: {
+                                "farm": { "type": "STRING" },
+                                "variety": { "type": "STRING" },
+                                "roaster": { "type": "STRING" },
+                                "process": { "type": "STRING" },
+                                "tastingNotes": { "type": "STRING" }
+                            },
+                        }
+                    }
+                };
+                
+                // Make the API call
+                const response = await fetch(API_URL + apiKey, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                if (!response.ok) {
+                    throw new Error(`API response was not ok: ${response.statusText}`);
+                }
+
+                const result = await response.json();
+                const jsonText = result?.candidates?.[0]?.content?.parts?.[0]?.text;
+                if (!jsonText) {
+                    throw new Error("Invalid API response format. Could not find JSON.");
+                }
+
+                extractedData = JSON.parse(jsonText);
+
+                const detectedDetails = document.getElementById('detected-details');
+                detectedDetails.innerHTML = `
+                    <p class="font-medium text-brown-700">Farm: <span class="font-normal text-gray-700">${extractedData.farm || 'N/A'}</span></p>
+                    <p class="font-medium text-brown-700">Variety: <span class="font-normal text-gray-700">${extractedData.variety || 'N/A'}</span></p>
+                    <p class="font-medium text-brown-700">Roaster: <span class="font-normal text-gray-700">${extractedData.roaster || 'N/A'}</span></p>
+                    <p class="font-medium text-brown-700">Process: <span class="font-normal text-gray-700">${extractedData.process || 'N/A'}</span></p>
+                    <p class="font-medium text-brown-700">Tasting Notes: <span class="font-normal text-gray-700">${extractedData.tastingNotes || 'N/A'}</span></p>
+                `;
+                detectedInfoSection.style.display = 'block';
+                statusMessage.textContent = 'Analysis complete.';
+            } catch (error) {
+                console.error("API Error:", error);
+                statusMessage.textContent = `Analysis failed: ${error.message}`;
+            }
+        }
+
+        // Event listener for the camera capture button
+        captureButton.addEventListener('click', () => {
+            if (captureButton.textContent === 'Take Photo') {
+                processImage(video);
+                isCameraActive = true;
+            } else {
+                startCamera();
+                detectedInfoSection.style.display = 'none';
+            }
+        });
+
+        // Event listener for the file input
+        fileInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = (event) => {
+                    const img = new Image();
+                    img.onload = () => {
+                        processImage(img);
+                        isCameraActive = false;
+                    };
+                    img.src = event.target.result;
+                };
+                reader.readAsDataURL(file);
+            }
+        });
+
+        // Function to load and render records from local storage
+        function renderRecords() {
+            const records = JSON.parse(localStorage.getItem(STORAGE_KEY)) || [];
+            recordsList.innerHTML = '';
+            if (records.length === 0) {
+                recordsList.innerHTML = '<p id="no-records-message" class="text-center text-gray-500">No records saved yet.</p>';
+            } else {
+                records.forEach(record => {
+                    const recordItem = document.createElement('div');
+                    recordItem.className = 'flex items-center space-x-4 bg-white rounded-lg p-3 shadow';
+                    recordItem.innerHTML = `
+                        <img src="${record.photo}" alt="Coffee Bag" class="w-16 h-16 rounded-lg object-cover shadow-md">
+                        <div class="flex-grow">
+                            <p class="font-semibold text-brown-800">${record.roaster} - ${record.farm}</p>
+                            <p class="text-sm text-gray-600">${record.variety} (${record.process})</p>
+                            <p class="text-xs text-gray-500">Tasting Notes: ${record.tastingNotes}</p>
+                        </div>
+                    `;
+                    recordsList.appendChild(recordItem);
+                });
+            }
+        }
+
+        // Function to save the current record to local storage
+        saveRecordButton.addEventListener('click', () => {
+            if (!photoDataURL || !extractedData.farm) return;
+
+            const newRecord = {
+                photo: photoDataURL,
+                farm: extractedData.farm,
+                variety: extractedData.variety,
+                roaster: extractedData.roaster,
+                process: extractedData.process,
+                tastingNotes: extractedData.tastingNotes,
+                timestamp: new Date().toISOString(),
+            };
+
+            const records = JSON.parse(localStorage.getItem(STORAGE_KEY)) || [];
+            records.push(newRecord);
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
+
+            // Reset UI after saving
+            startCamera();
+            detectedInfoSection.style.display = 'none';
+            statusMessage.textContent = 'Record saved!';
+            
+            renderRecords(); // Refresh the list of records
+        });
+
+        // Initialize the app when the page loads
+        window.onload = () => {
+            startCamera();
+            renderRecords();
+        };
+
+    </script>
+</body>
+</html>
